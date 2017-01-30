@@ -11,7 +11,6 @@ import it.unitn.ds1.messages.client.*;
 import it.unitn.ds1.messages.internal.*;
 import it.unitn.ds1.node.status.ReadRequestStatus;
 import it.unitn.ds1.node.status.WriteRequestStatus;
-import it.unitn.ds1.node.status.WriteResponseStatus;
 import it.unitn.ds1.storage.FileStorageManager;
 import it.unitn.ds1.storage.StorageManager;
 import it.unitn.ds1.storage.VersionedItem;
@@ -63,13 +62,9 @@ public final class NodeActor extends UntypedActor {
 	// Maps the requestID to the request status
 	private final Map<Integer, ReadRequestStatus> readRequests;
 
-	// Write progress for a future write request the node is responsible for
+	// Write progress and acknowledges for a future write request the node is responsible for
 	// Maps the requestID to the request status
 	private final Map<Integer, WriteRequestStatus> writeRequests;
-
-	// Write responses from nodes to which a write has been asked
-	// Maps the requestID to the response status
-	private final Map<Integer, WriteResponseStatus> writeResponses;
 
 	// Timers for read or write requests
 	// Every timer is responsible for delivering a timeout message to node is responsible for the request.
@@ -131,7 +126,6 @@ public final class NodeActor extends UntypedActor {
 		// initialize other variables
 		this.readRequests = new HashMap<>();
 		this.writeRequests = new HashMap<>();
-		this.writeResponses = new HashMap<>();
 		this.requestsTimers = new HashMap<>();
 		this.requestCount = 0;
 
@@ -516,14 +510,14 @@ public final class NodeActor extends UntypedActor {
 
 		// check that the request is still valid
 		final int requestID = message.getRequestID();
-		final boolean valid = writeResponses.containsKey(message.getRequestID());
+		final boolean valid = writeRequests.containsKey(message.getRequestID());
 
 		if (!valid) {
 			logger.debug("[WRITE] Old write ack for write request [{}] from node [{}]... ignore it", requestID, message.getSenderID());
 		} else {
 
 			logger.debug("[WRITE] Valid ack for write request [{}] from node [{}]", requestID, message.getSenderID());
-			final WriteResponseStatus writeStatus = writeResponses.get(requestID);
+			final WriteRequestStatus writeStatus = writeRequests.get(requestID);
 
 			writeStatus.addAck(message.getSenderID());
 
@@ -532,10 +526,10 @@ public final class NodeActor extends UntypedActor {
 				logger.info("[WRITE] Every node acknowledge for write request [{}] - inform the client", writeStatus.getNodeAcksIds().toString());
 
 				// send successful response to client with updated record
-				writeStatus.getSender().tell(new ClientUpdateResponse(id, writeStatus.getKey(), writeStatus.getVersionedItem()), getSelf());
+				writeStatus.getSender().tell(new ClientUpdateResponse(id, writeStatus.getKey(), writeStatus.getUpdatedRecord()), getSelf());
 
 				//cleanup memory
-				this.writeResponses.remove(requestID);
+				this.writeRequests.remove(requestID);
 
 			} else {
 				logger.debug("[WRITE] Some node acks are still missing. Nodes who acknowledge the write: [{}] - waiting...", writeStatus.getNodeAcksIds().toString());
@@ -595,18 +589,16 @@ public final class NodeActor extends UntypedActor {
 					final VersionedItem updatedRecord = writeStatus.getUpdatedRecord();
 
 					// send write request to interested nodes (nodes responsible for that key)
-					this.writeResponses.put(requestID, new WriteResponseStatus(writeStatus.getKey(), updatedRecord, writeStatus.getSender(), readQuorum, writeQuorum));
 					final Set<Integer> responsible = ring.responsibleForKey(writeStatus.getKey());
 					responsible.forEach(node -> ring.getNode(node).tell(new WriteRequest(id, requestCount, writeStatus.getKey(), updatedRecord), getSelf()));
 
 					// cancel the timeout
 					this.requestsTimers.get(requestID).cancel();
 					// cleanup memory
-					this.writeRequests.remove(requestID);
 					this.requestsTimers.remove(requestID);
 
 				} else {
-					logger.debug("[UPDATE] Quorum NOT reached yet for write request [{}] - waiting...", requestID);
+					logger.debug("[UPDATE] Quorum NOT reached yet for write request [{}] or Old vote - waiting...", requestID);
 				}
 			}
 		}

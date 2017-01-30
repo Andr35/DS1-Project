@@ -3,8 +3,10 @@ package it.unitn.ds1.node.status;
 import akka.actor.ActorRef;
 import it.unitn.ds1.storage.VersionedItem;
 
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * This object is used to collect the responses of some write request.
@@ -16,10 +18,15 @@ public final class WriteRequestStatus {
 	// internal variables
 	private final int key;
 	private final String newValue;
+	private VersionedItem versionedItem;
+
 
 	// replies to "read requests"
 	// used to collect records to decide new record's version before performing the write
 	private final List<VersionedItem> replies;
+	// nodes who confirmed the write
+	private final Set<Integer> nodesAcks;
+
 	private final ActorRef sender;
 	private final int quorum;
 	private int nullVotes;
@@ -29,6 +36,7 @@ public final class WriteRequestStatus {
 		this.key = key;
 		this.newValue = newValue;
 		this.replies = new LinkedList<>();
+		this.nodesAcks = new HashSet<>();
 		this.sender = sender;
 		this.quorum = Math.max(readQuorum, writeQuorum);
 		this.nullVotes = 0;
@@ -43,7 +51,7 @@ public final class WriteRequestStatus {
 	}
 
 	public boolean isQuorumReached() {
-		return this.replies.size() + this.nullVotes >= quorum;
+		return this.replies.size() + this.nullVotes == quorum;
 	}
 
 	public int getKey() {
@@ -51,21 +59,38 @@ public final class WriteRequestStatus {
 	}
 
 	public VersionedItem getUpdatedRecord() {
-		if (!isQuorumReached()) {
-			throw new IllegalStateException("Please make sure the quorum is reached before getting the new record");
+
+		if (versionedItem == null) {
+			if (!isQuorumReached()) {
+				throw new IllegalStateException("Please make sure the quorum is reached before getting the new record");
+			}
+
+			// calculate new version
+			int lastVersion = 0;
+			for (VersionedItem record : this.replies) {
+				lastVersion = (record.getVersion() > lastVersion) ? (record.getVersion()) : (lastVersion);
+			}
+			lastVersion++;
+
+			this.versionedItem = new VersionedItem(this.newValue, lastVersion);
 		}
 
-		// calculate new version
-		int lastVersion = 0;
-		for (VersionedItem record : this.replies) {
-			lastVersion = (record.getVersion() > lastVersion) ? (record.getVersion()) : (lastVersion);
-		}
-		lastVersion++;
-
-		return new VersionedItem(this.newValue, lastVersion);
+		return versionedItem;
 	}
 
 	public ActorRef getSender() {
 		return sender;
+	}
+
+	public void addAck(int nodeId) {
+		this.nodesAcks.add(nodeId);
+	}
+
+	public boolean hasAckQuorumReached() {
+		return this.nodesAcks.size() >= quorum;
+	}
+
+	public Set<Integer> getNodeAcksIds() {
+		return nodesAcks;
 	}
 }
